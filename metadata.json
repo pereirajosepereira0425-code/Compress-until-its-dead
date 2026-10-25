@@ -1,0 +1,6 @@
+{
+  "name": "compresss until it's dead",
+  "description": "Extreme video compression studio inspired by FreeConvert with zero limits — scale resolution to any size, crush bitrates, customize codecs, framerate, and quality.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
