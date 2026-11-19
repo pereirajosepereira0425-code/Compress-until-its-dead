@@ -37,6 +37,9 @@ export interface CompressionSettings {
   audioHardClip?: boolean; // hard square-wave clipping overdrive
   audioMetallicResonance?: boolean; // metallic robot pipe resonance (aecho filter)
   audioBandpass?: boolean; // 250Hz - 3.6kHz telephone bandpass filter
+  monochromeOneBit?: boolean; // 1-bit monochrome binary video (black/white 0 or 1)
+  oneBitMode?: boolean; // compresses video payload down to 1 single bit (before byte)
+  zeroBitMode?: boolean; // erases 100% of data down to literal 0 bits (0 bytes)
 }
 
 export interface VideoMetadata {
@@ -117,9 +120,13 @@ export function getSyncedAudioResolution(effectiveHeight: number): {
 export function calculateDimensionsFromPixelCount(
   origW: number,
   origH: number,
-  totalPixels: number
+  totalPixels: number,
+  allowZero: boolean = false
 ): { width: number; height: number } {
-  if (origW <= 0 || origH <= 0 || totalPixels <= 0) return { width: 64, height: 36 };
+  if (origW <= 0 || origH <= 0) return { width: 64, height: 36 };
+  if (totalPixels <= 0) {
+    return allowZero ? { width: 0, height: 0 } : { width: 1, height: 1 };
+  }
   if (totalPixels <= 1) {
     return { width: 1, height: 1 };
   }
@@ -166,39 +173,45 @@ export function calculateTargetDimensions(
   let targetW = origW;
   let targetH = origH;
 
-  if (settings.resolutionMode === 'pixel_count' && settings.totalPixels && settings.totalPixels > 0) {
-    const fromPixels = calculateDimensionsFromPixelCount(origW, origH, settings.totalPixels);
+  const allowZero = Boolean(settings.oneBitMode);
+  const minDim = allowZero ? 0 : 1;
+
+  if (settings.resolutionMode === 'pixel_count' && settings.totalPixels !== undefined) {
+    const fromPixels = calculateDimensionsFromPixelCount(origW, origH, settings.totalPixels, allowZero);
     targetW = fromPixels.width;
     targetH = fromPixels.height;
   } else if (
     settings.resolutionMode === 'custom' ||
-    (settings.customWidth && settings.customHeight && (settings.customWidth !== origW || settings.customHeight !== origH))
+    (settings.customWidth !== undefined && settings.customHeight !== undefined && (settings.customWidth !== origW || settings.customHeight !== origH))
   ) {
-    const userW = Math.max(1, settings.customWidth || origW);
-    const userH = Math.max(1, settings.customHeight || origH);
+    const userW = Math.max(minDim, settings.customWidth ?? origW);
+    const userH = Math.max(minDim, settings.customHeight ?? origH);
 
-    if (settings.maintainAspectRatio) {
+    if (allowZero && (userW === 0 || userH === 0)) {
+      targetW = userW;
+      targetH = userH;
+    } else if (settings.maintainAspectRatio) {
       const aspect = origW / origH;
-      if (settings.customWidth && !settings.customHeight) {
+      if (settings.customWidth !== undefined && settings.customHeight === undefined) {
         targetW = userW;
-        targetH = Math.max(1, Math.round(userW / aspect));
-      } else if (settings.customHeight && !settings.customWidth) {
+        targetH = Math.max(minDim, Math.round(userW / aspect));
+      } else if (settings.customHeight !== undefined && settings.customWidth === undefined) {
         targetH = userH;
-        targetW = Math.max(1, Math.round(userH * aspect));
+        targetW = Math.max(minDim, Math.round(userH * aspect));
       } else {
         // Both provided with maintain aspect ratio: fit inside box
         const scaleW = userW / origW;
         const scaleH = userH / origH;
         const scale = Math.min(scaleW, scaleH);
-        targetW = Math.max(1, Math.round(origW * scale));
-        targetH = Math.max(1, Math.round(origH * scale));
+        targetW = Math.max(minDim, Math.round(origW * scale));
+        targetH = Math.max(minDim, Math.round(origH * scale));
       }
     } else {
       targetW = userW;
       targetH = userH;
     }
   } else if (settings.resolutionMode === 'scale_percent') {
-    const scale = Math.max(0.01, (settings.scalePercent ?? 100) / 100);
+    const scale = Math.max(allowZero ? 0 : 0.01, (settings.scalePercent ?? 100) / 100);
     targetW = Math.round(origW * scale);
     targetH = Math.round(origH * scale);
   } else if (settings.resolutionMode === 'preset') {
@@ -237,9 +250,9 @@ export function calculateTargetDimensions(
     }
   }
 
-  // Ensure minimum 1x1
-  targetW = Math.max(1, Math.round(targetW));
-  targetH = Math.max(1, Math.round(targetH));
+  // Ensure minimum 0 (1-bit mode) or 1
+  targetW = Math.max(minDim, Math.round(targetW));
+  targetH = Math.max(minDim, Math.round(targetH));
 
   return { width: targetW, height: targetH };
 }
@@ -398,7 +411,7 @@ export const COMPRESSION_PRESETS: PresetDefinition[] = [
   },
   {
     id: 'gumball-meme',
-    name: '💫 Gumball Shooting Star',
+    name: 'Gumball Shooting Star',
     icon: '💫',
     badge: 'Meme Audio & Pixels',
     description: 'Exact meme look & sound: 2,304 total pixels (64×36), nearest-neighbor chunky mosaic, speech comb echo, telephone bandpass, and blown-out +12dB overdrive singing drop.',
@@ -428,7 +441,7 @@ export const COMPRESSION_PRESETS: PresetDefinition[] = [
   },
   {
     id: 'demonic-worst',
-    name: '☠️ WORST AUDIO EVER',
+    name: 'WORST AUDIO EVER',
     icon: '👹',
     badge: 'Pure Demonic Screech',
     description: 'Worse than the meme: +24dB speaker blowout, 1-bit harsh aliasing, dual demonic comb filter, and 1,000 Hz foldover crunch.',
@@ -478,7 +491,7 @@ export const COMPRESSION_PRESETS: PresetDefinition[] = [
   },
   {
     id: 'oblivion-zero',
-    name: '🪦 ABSOLUTE OBLIVION',
+    name: 'ABSOLUTE OBLIVION',
     icon: '🪦',
     badge: '2kbps / 12x12',
     description: 'Theoretical zero: 12x12 pixels, 2 kbps, 2kHz robotic pulse, 2 fps.',
@@ -493,6 +506,107 @@ export const COMPRESSION_PRESETS: PresetDefinition[] = [
       audioBitrateKbps: 2,
       fpsMode: 'custom',
       fps: 2,
+    },
+  },
+  {
+    id: 'all-ones-30db',
+    name: 'ALL-1 +30dB CRUSH',
+    icon: '1️⃣',
+    badge: 'All = 1',
+    description: 'Applies 1 to every single video & audio box (1×1 px, 1 total px, 1 Hz, 1-bit, 1 kbps, 1% vol, 1 fps, CRF 1) + +30dB Overdrive & Chunky Pixels.',
+    settings: {
+      compressionFocus: 'both',
+      mode: 'bitrate',
+      videoBitrateKbps: 1,
+      crf: 1,
+      resolutionMode: 'pixel_count',
+      customWidth: 1,
+      customHeight: 1,
+      totalPixels: 1,
+      chunkyPixelUpscale: true,
+      maintainAspectRatio: true,
+      fpsMode: 'custom',
+      fps: 1,
+      syncAudioResolution: false,
+      audioMode: 'custom',
+      memeAudioMode: 'custom',
+      audioOverdriveDb: 30,
+      audioHardClip: false,
+      audioMetallicResonance: false,
+      audioBandpass: false,
+      audioSampleRate: 1,
+      audioBitDepth: 1,
+      audioBitrateKbps: 1,
+      audioVolumePercent: 1,
+    },
+  },
+  {
+    id: 'one-bit-singularity',
+    name: '1-BIT (Before Byte)',
+    icon: '⚛️',
+    badge: '1 bit (0.125 B)',
+    description: 'Sets everything minus audio to 0 (0×0 px, 0 kbps, 0 fps, CRF 0), calculates exact compression to reach 1 bit (0 or 1), and cascades audio down to 1-bit.',
+    settings: {
+      compressionFocus: 'both',
+      mode: 'bitrate',
+      videoBitrateKbps: 0,
+      crf: 0,
+      resolutionMode: 'pixel_count',
+      customWidth: 0,
+      customHeight: 0,
+      totalPixels: 0,
+      chunkyPixelUpscale: true,
+      monochromeOneBit: true,
+      oneBitMode: true,
+      maintainAspectRatio: true,
+      fpsMode: 'custom',
+      fps: 0,
+      syncAudioResolution: false,
+      audioMode: 'custom',
+      memeAudioMode: 'demonic_worst',
+      audioOverdriveDb: 24,
+      audioHardClip: true,
+      audioMetallicResonance: false,
+      audioBandpass: false,
+      audioSampleRate: 1,
+      audioBitDepth: 1,
+      audioBitrateKbps: 1,
+      audioVolumePercent: 100,
+    },
+  },
+  {
+    id: 'zero-bit-void',
+    name: '0-BIT VOID',
+    icon: '⚫',
+    badge: '0 bits (0 B)',
+    description: 'Absolute digital annihilation: compresses 100.0% of the entire video & audio down to literal 0 bits (0 Bytes — pure nothingness).',
+    settings: {
+      compressionFocus: 'both',
+      mode: 'bitrate',
+      videoBitrateKbps: 0,
+      crf: 0,
+      resolutionMode: 'pixel_count',
+      customWidth: 0,
+      customHeight: 0,
+      totalPixels: 0,
+      chunkyPixelUpscale: false,
+      monochromeOneBit: true,
+      oneBitMode: true,
+      zeroBitMode: true,
+      maintainAspectRatio: true,
+      fpsMode: 'custom',
+      fps: 0,
+      syncAudioResolution: false,
+      audioMode: 'mute',
+      memeAudioMode: 'none',
+      audioOverdriveDb: 0,
+      audioHardClip: false,
+      audioMetallicResonance: false,
+      audioBandpass: false,
+      audioSampleRate: 0,
+      audioBitDepth: 0,
+      audioBitrateKbps: 0,
+      audioVolumePercent: 0,
     },
   },
 ];
@@ -588,4 +702,52 @@ export function getMemeAudioDescription(settings: CompressionSettings): string |
   }
   return null;
 }
+
+/**
+ * Compute FFmpeg acrusher sample-and-hold factor (1..250) from a target sample rate
+ * at an 8000 Hz audible carrier so ultra-low rates (1 Hz .. 4000 Hz) stay loud & hearable
+ * instead of collapsing to zero samples or inaudible low-pass silence.
+ */
+export function calculateAcrusherSamplesForRate(
+  targetSampleRate: number,
+  carrierRate: number = 8000
+): number {
+  const safeRate = Math.max(1, targetSampleRate);
+  if (safeRate >= carrierRate) return 1;
+  const ratio = Math.round(carrierRate / safeRate);
+  return Math.max(1, Math.min(250, ratio));
+}
+
+export interface OneBitCompressionPlan {
+  originalBits: number;
+  targetBits: 1;
+  bytesEquivalent: 0.125;
+  compressionRatio: number;
+  percentSaved: number;
+  requiredTotalBps: number;
+}
+
+/**
+ * Calculate exact compression ratio & bitrate needed to crush the video down to 1 bit.
+ */
+export function calculateOneBitCompressionStats(
+  originalBytes: number,
+  durationSeconds: number
+): OneBitCompressionPlan {
+  const safeBytes = Math.max(1, Math.round(originalBytes || 1));
+  const originalBits = safeBytes * 8;
+  const compressionRatio = originalBits;
+  const percentSaved = Number((((originalBits - 1) / originalBits) * 100).toFixed(6));
+  const safeDuration = Math.max(0.1, durationSeconds || 1);
+  const requiredTotalBps = Number((1 / safeDuration).toFixed(6));
+  return {
+    originalBits,
+    targetBits: 1,
+    bytesEquivalent: 0.125,
+    compressionRatio,
+    percentSaved,
+    requiredTotalBps,
+  };
+}
+
 

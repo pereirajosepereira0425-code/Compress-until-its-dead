@@ -11,6 +11,8 @@ import {
   getSyncedAudioResolution,
   estimateBitrateForTargetSize,
   calculateSavings,
+  calculateAcrusherSamplesForRate,
+  calculateOneBitCompressionStats,
 } from './src/utils/compressionMath';
 
 dotenv.config();
@@ -85,6 +87,7 @@ async function probeVideo(filePath: string) {
       audioSampleRate: parseInt(audioStream?.sample_rate || '44100', 10),
       audioChannels: parseInt(audioStream?.channels || '2', 10),
       audioBitrateKbps: Math.round(parseInt(audioStream?.bit_rate || '128000', 10) / 1000) || 128,
+      hasAudio: Boolean(audioStream),
     };
   } catch (err) {
     console.error('Error probing video:', err);
@@ -101,6 +104,7 @@ async function probeVideo(filePath: string) {
       audioSampleRate: 44100,
       audioChannels: 2,
       audioBitrateKbps: 128,
+      hasAudio: true,
     };
   }
 }
@@ -151,6 +155,16 @@ async function ensureSampleVideos() {
       console.warn('Could not copy user sample video:', e);
     }
   }
+
+  // Copy user's attached Story of Undertale video if present
+  const undertaleAssetPath = path.resolve('public/assets/aistudio/__UNDERTALE_THE_MUSICAL_-_Animation_Song_Parody_2a4f2d97.mp4');
+  if (fs.existsSync(undertaleAssetPath)) {
+    try {
+      fs.copyFileSync(undertaleAssetPath, `${SAMPLES_DIR}/sample_undertale.mp4`);
+    } catch (e) {
+      console.warn('Could not copy user undertale video:', e);
+    }
+  }
 }
 
 // Ensure samples are built in background
@@ -166,6 +180,13 @@ app.get('/api/samples', async (_req, res) => {
       badge: 'User Meme · 144p Pixels',
       originalName: 'gumball_shooting_star.mp4',
       filePath: `${SAMPLES_DIR}/sample_gumball.mp4`,
+    },
+    {
+      id: 'sample_undertale',
+      name: '🦴 Story of Undertale (Musical)',
+      badge: 'User Video · 720p · 3m45s',
+      originalName: 'story_of_undertale.mp4',
+      filePath: `${SAMPLES_DIR}/sample_undertale.mp4`,
     },
     {
       id: 'sample_neon_drive',
@@ -269,6 +290,54 @@ app.post('/api/compress', async (req, res) => {
 
     const inputMeta = await probeVideo(sourcePath);
 
+    // 0-BIT VOID mode: compress 100% of video & audio down to literal 0 bits (0 bytes)
+    if (settings.zeroBitMode) {
+      const voidPreviewName = `compressed_0bit_${Date.now()}_0x0.mp4`;
+      const voidPreviewPath = path.join(OUTPUTS_DIR, voidPreviewName);
+      try {
+        await execAsync(
+          `ffmpeg -y -f lavfi -i "color=c=black:s=2x2:d=1:r=1" -c:v libx264 -pix_fmt yuv420p -qp 51 -an -movflags +faststart "${voidPreviewPath}"`
+        );
+      } catch (e) {
+        console.warn('Could not build 0-bit black preview clip:', e);
+      }
+      const originalBits = Math.max(1, Math.round(inputMeta.sizeBytes * 8));
+      res.json({
+        success: true,
+        fileId: voidPreviewName,
+        downloadUrl: '/api/download-zerobit',
+        streamUrl: `/api/stream/${voidPreviewName}`,
+        original: inputMeta,
+        compressed: {
+          ...inputMeta,
+          width: 0,
+          height: 0,
+          targetWidth: 0,
+          targetHeight: 0,
+          sizeBytes: 0,
+          bitrateKbps: 0,
+          fps: 0,
+          audioSampleRate: 0,
+          audioBitDepth: 0,
+          audioTierLabel: '⚫ 0-Bit Void (0 Hz / Muted)',
+          memeAudioMode: 'none',
+          audioOverdriveDb: 0,
+          zeroBitPayload: {
+            bitsCount: 0,
+            bytesEquivalent: 0,
+            originalBits,
+            percentSaved: 100,
+            rawDownloadUrl: '/api/download-zerobit',
+          },
+        },
+        savings: {
+          bytesSaved: inputMeta.sizeBytes,
+          percentSaved: 100,
+        },
+      });
+      return;
+    }
+
     // Compute target dimensions
     const { width: targetW, height: targetH } = calculateTargetDimensions(
       inputMeta.width,
@@ -314,7 +383,9 @@ app.post('/api/compress', async (req, res) => {
     }
 
     // Formulate output filename
-    const outFilename = `compressed_${Date.now()}_${targetW}x${targetH}.mp4`;
+    const safeTagW = Math.max(0, targetW);
+    const safeTagH = Math.max(0, targetH);
+    const outFilename = `compressed_${Date.now()}_${safeTagW}x${safeTagH}.mp4`;
     const outputPath = path.join(OUTPUTS_DIR, outFilename);
 
     // Build FFmpeg command arguments
@@ -322,29 +393,39 @@ app.post('/api/compress', async (req, res) => {
 
     // Video Filters (Resolution & FPS)
     const vfParts: string[] = [];
-    
+    const ffW = Math.max(1, targetW);
+    const ffH = Math.max(1, targetH);
+
     // Check FreeConvert compressionFocus:
-    // If 'quality_only', do NOT downscale resolution (preserve full original pixel canvas)
-    // If 'resolution_only' or 'both', apply target dimensions!
-    if (settings.compressionFocus !== 'quality_only') {
+    const evenOutW = Math.max(2, Math.round(inputMeta.width / 2) * 2);
+    const evenOutH = Math.max(2, Math.round(inputMeta.height / 2) * 2);
+    if (settings.oneBitMode) {
+      // Absolute 1-bit monochrome singularity: collapse to a 1x1 binary (0 or 1) bit frame in a 2x2 H.264 container
+      vfParts.push('scale=1:1:flags=neighbor,format=monob,format=yuv420p,pad=2:2:0:0');
+    } else if (settings.compressionFocus !== 'quality_only') {
+      const monobPart = settings.monochromeOneBit ? ',format=monob,format=yuv420p' : '';
       if (settings.chunkyPixelUpscale) {
-        // Nearest-neighbor downscale + nearest-neighbor upscale back to original canvas:
-        // This renders the EXACT razor-sharp, massive blocky mosaic pixels seen in the Gumball meme video!
-        vfParts.push(`scale=${targetW}:${targetH}:flags=neighbor,scale=${inputMeta.width}:${inputMeta.height}:flags=neighbor`);
+        // Nearest-neighbor downscale + optional 1-bit monochrome quantization + nearest-neighbor upscale to even canvas
+        vfParts.push(`scale=${ffW}:${ffH}:flags=neighbor${monobPart},scale=${evenOutW}:${evenOutH}:flags=neighbor`);
       } else {
-        const scaleFlag = targetH <= 144 ? 'neighbor' : 'bicubic';
-        // If target dimensions are odd (e.g. 1px or 1x1), pad to even numbers for libx264 compatibility
-        if (targetW % 2 !== 0 || targetH % 2 !== 0) {
-          vfParts.push(`scale=${targetW}:${targetH}:flags=${scaleFlag},pad=ceil(iw/2)*2:ceil(ih/2)*2:0:0`);
+        const scaleFlag = ffH <= 144 ? 'neighbor' : 'bicubic';
+        if (ffW % 2 !== 0 || ffH % 2 !== 0) {
+          vfParts.push(`scale=${ffW}:${ffH}:flags=${scaleFlag}${monobPart},pad=ceil(iw/2)*2:ceil(ih/2)*2:0:0`);
         } else {
-          vfParts.push(`scale=${targetW}:${targetH}:flags=${scaleFlag}`);
+          vfParts.push(`scale=${ffW}:${ffH}:flags=${scaleFlag}${monobPart}`);
         }
       }
+    } else if (settings.monochromeOneBit) {
+      vfParts.push('format=monob,format=yuv420p');
     }
 
-    if (settings.fpsMode === 'custom' && settings.fps) {
-      const targetFps = Math.max(0.5, Number(settings.fps));
+    if (settings.fpsMode === 'custom' && settings.fps !== undefined && settings.fps !== null) {
+      // If user sets fps=0 in 1-bit mode, collapse to 0.2 fps (1 keyframe per 5 seconds)
+      const requestedFps = Number(settings.fps);
+      const targetFps = requestedFps <= 0 ? 0.2 : Math.max(0.2, requestedFps);
       vfParts.push(`fps=${targetFps}`);
+    } else if (settings.oneBitMode) {
+      vfParts.push('fps=0.2');
     }
 
     if (vfParts.length > 0) {
@@ -354,9 +435,12 @@ app.post('/api/compress', async (req, res) => {
     // Codec & Quality flags
     ffmpegArgs.push('-c:v', 'libx264');
     ffmpegArgs.push('-pix_fmt', 'yuv420p');
-    ffmpegArgs.push('-preset', 'veryfast');
+    ffmpegArgs.push('-preset', settings.oneBitMode ? 'veryslow' : 'veryfast');
 
-    if (settings.compressionFocus === 'resolution_only') {
+    if (settings.oneBitMode) {
+      // Absolute theoretical minimum H.264 quantization (QP 51, single GOP) for 1-bit binary payload
+      ffmpegArgs.push('-qp', '51', '-g', '99999', '-sc_threshold', '0');
+    } else if (settings.compressionFocus === 'resolution_only') {
       // Resolution Only: preserve high visual encoding quality, only reduce dimensions!
       ffmpegArgs.push('-crf', '18');
     } else if (settings.mode === 'crf') {
@@ -380,7 +464,8 @@ app.post('/api/compress', async (req, res) => {
     }
 
     // Audio Filters & Settings
-    if (settings.audioMode === 'mute') {
+    const volumePctRaw = settings.audioVolumePercent ?? 100;
+    if (settings.audioMode === 'mute' || !inputMeta.hasAudio || Number(volumePctRaw) <= 0) {
       ffmpegArgs.push('-an');
     } else {
       ffmpegArgs.push('-c:a', 'aac');
@@ -388,7 +473,9 @@ app.post('/api/compress', async (req, res) => {
       const afFilters: string[] = [];
 
       // Set audio tier label for meme modes
-      if (settings.memeAudioMode === 'gumball_meme') {
+      if (settings.oneBitMode) {
+        audioTierLabel = '⚛️ 1-Bit Binary Pulse (1 Hz / 1-bit)';
+      } else if (settings.memeAudioMode === 'gumball_meme') {
         audioTierLabel = '💫 Gumball Meme Sound (+12dB Hardclip / Comb Echo)';
       } else if (settings.memeAudioMode === 'demonic_worst') {
         audioTierLabel = '☠️ Demonic Audio Extinction (+24dB Blowout / 1-bit)';
@@ -396,47 +483,92 @@ app.post('/api/compress', async (req, res) => {
         audioTierLabel = '📻 1990s Lo-Fi Telephone Bandpass';
       }
 
-      // 1. Audio Overdrive / Distortion Gain (boost input into clipping)
-      const overdriveDb = Number(settings.audioOverdriveDb || 0);
+      const overdriveDb = Math.max(0, Number(settings.audioOverdriveDb || 0));
+      const volumePct = Number(settings.audioVolumePercent ?? 100);
+      const isCrushedAudio =
+        targetSampleRate < 8000 ||
+        audioBitDepth < 16 ||
+        overdriveDb > 0 ||
+        Boolean(settings.syncAudioResolution) ||
+        (settings.memeAudioMode && settings.memeAudioMode !== 'none');
+
+      // 1. Pre-volume scaling when overdrive is active (prevents 1% volume + +30dB overdrive from muting)
+      if (overdriveDb > 0 && volumePct !== 100) {
+        const vol = Math.max(0.01, volumePct / 100).toFixed(2);
+        afFilters.push(`volume=${vol}`);
+      }
+
+      // 2. Audio Overdrive / Distortion Gain (boost input into clipping)
       if (overdriveDb > 0) {
         afFilters.push(`volume=${overdriveDb}dB`);
       }
 
-      // 2. Hard-clipping / speaker blowout saturation (essential for the Gumball meme singing drop)
-      if (settings.audioHardClip || settings.memeAudioMode === 'gumball_meme' || settings.memeAudioMode === 'demonic_worst') {
+      // 3. Hard-clipping / speaker blowout saturation BEFORE acrusher so extreme dB never feeds Inf/NaN
+      if (
+        overdriveDb > 0 ||
+        settings.audioHardClip ||
+        settings.memeAudioMode === 'gumball_meme' ||
+        settings.memeAudioMode === 'demonic_worst'
+      ) {
         afFilters.push('asoftclip=type=hard');
       }
 
-      // 3. Metallic comb echo / robotic resonance (character of low-bitrate MP3/AAC decoders in memes)
+      // 4. Metallic comb echo / robotic resonance (character of low-bitrate MP3/AAC decoders in memes)
       if (settings.audioMetallicResonance || settings.memeAudioMode === 'gumball_meme') {
         afFilters.push('aecho=0.8:0.88:8:0.45');
       } else if (settings.memeAudioMode === 'demonic_worst') {
         afFilters.push('aecho=0.8:0.95:4|8:0.65|0.55');
       }
 
-      // 4. Telephone / radio bandpass filter (lo-fi speech frequency cutoff)
+      // 5. Telephone / radio bandpass filter (lo-fi speech frequency cutoff)
       if (settings.audioBandpass || settings.memeAudioMode === 'gumball_meme') {
         afFilters.push('highpass=f=250,lowpass=f=3600');
       }
 
-      // 5. Downsample to target sample rate (even down to 1 Hz!) then resample to 8000 Hz for AAC encoder compliance
-      if (targetSampleRate < 8000) {
-        afFilters.push(`aresample=${targetSampleRate},aresample=8000`);
+      // 6. Audible Sample-and-Hold Decimation & Bitcrushing (replaces silent aresample=1!)
+      const carrierRate = Math.max(8000, targetSampleRate);
+      const sampleHold = calculateAcrusherSamplesForRate(targetSampleRate, carrierRate);
+      if (settings.oneBitMode) {
+        // Multi-stage iterative bitcrush cascade: keeps crushing audio 4-bit -> 2-bit -> 1-bit until pure 1-bit audio
+        afFilters.push('aresample=8000');
+        afFilters.push('acrusher=bits=4:samples=64:mix=1:mode=lin:aa=0');
+        afFilters.push('acrusher=bits=2:samples=128:mix=1:mode=lin:aa=0');
+        afFilters.push(`acrusher=bits=1:samples=${sampleHold}:mix=1:mode=lin:aa=0`);
+      } else {
+        if (targetSampleRate < 8000) {
+          afFilters.push('aresample=8000');
+        }
+        if (audioBitDepth < 16 || sampleHold > 1) {
+          // Use mode=lin (NaN-safe at extreme gains & 1-bit) and mix=1 for full bitcrushed texture
+          afFilters.push(`acrusher=bits=${audioBitDepth}:samples=${sampleHold}:mix=1:mode=lin:aa=0`);
+        }
       }
 
-      // 6. Bitcrusher filter for reduced audio bit resolution (even down to 1-bit!) with aliasing aa=0
-      if (audioBitDepth < 16) {
-        afFilters.push(`acrusher=bits=${audioBitDepth}:mode=log:aa=0`);
+      // 7. Ultra-low sample rate rhythm pulse (e.g. 1 Hz - 20 Hz literally chops at target Hz!)
+      if (targetSampleRate <= 20) {
+        const pulseHz = Math.max(1, targetSampleRate);
+        afFilters.push(`tremolo=f=${pulseHz}:d=0.65`);
       }
 
-      // 7. Overall volume multiplier
-      if (settings.audioVolumePercent && settings.audioVolumePercent !== 100) {
-        const vol = (settings.audioVolumePercent / 100).toFixed(2);
+      // 8. Guarantee Crushed / Synced audio is normalized & hearable (and NaN/Inf clamped before AAC!)
+      if (isCrushedAudio) {
+        afFilters.push('dynaudnorm=f=150:g=15:p=0.9');
+        afFilters.push('alimiter=limit=0.95');
+      }
+
+      // 9. Standard post-volume scaling if overdrive is NOT active and not crushing volume to 0
+      if (overdriveDb === 0 && volumePct !== 100) {
+        const vol = Math.max(0.01, volumePct / 100).toFixed(2);
         afFilters.push(`volume=${vol}`);
       }
 
       if (afFilters.length > 0) {
         ffmpegArgs.push('-af', afFilters.join(','));
+      }
+
+      // Mono encoding at low bitrates/sample rates preserves full audible clarity instead of losing sidebands
+      if (targetAudioBitrateKbps <= 32 || targetSampleRate < 16000) {
+        ffmpegArgs.push('-ac', '1');
       }
 
       // AAC requires sample rate >= 8000
@@ -476,6 +608,53 @@ app.post('/api/compress', async (req, res) => {
       const outMeta = await probeVideo(outputPath);
       const savings = calculateSavings(inputMeta.sizeBytes, outMeta.sizeBytes);
 
+      // If 1-bit singularity mode is active, extract the changing 0/1 bit timeline (1 bit per moment)
+      let oneBitPayload:
+        | {
+            bit: 0 | 1;
+            bitsCount: 1;
+            bytesEquivalent: 0.125;
+            originalBits: number;
+            compressionRatio: number;
+            percentSaved: number;
+            requiredTotalBps: number;
+            bitTimeline: (0 | 1)[];
+            rawDownloadUrl: string;
+          }
+        | undefined;
+
+      if (settings.oneBitMode) {
+        let singleBit: 0 | 1 = 1;
+        let bitTimeline: (0 | 1)[] = [1];
+        try {
+          const { stdout: rawLuma } = await execAsync(
+            `ffmpeg -v error -i "${outputPath}" -vf "fps=1,scale=1:1,format=gray" -f rawvideo pipe:1`,
+            { encoding: 'buffer' } as any
+          );
+          const buf = Buffer.isBuffer(rawLuma) ? rawLuma : Buffer.from(rawLuma as any);
+          if (buf.length > 0) {
+            const vals = Array.from(buf);
+            bitTimeline = vals.map((v) => (v >= 128 ? 1 : 0));
+            const avg = vals.reduce((a, b) => a + b, 0) / vals.length;
+            singleBit = avg >= 128 ? 1 : 0;
+          }
+        } catch (e) {
+          console.warn('Could not extract 1-bit luma, defaulting bit=1:', e);
+        }
+        const plan = calculateOneBitCompressionStats(inputMeta.sizeBytes, inputMeta.durationSeconds);
+        oneBitPayload = {
+          bit: singleBit,
+          bitsCount: 1,
+          bytesEquivalent: 0.125,
+          originalBits: plan.originalBits,
+          compressionRatio: plan.compressionRatio,
+          percentSaved: plan.percentSaved,
+          requiredTotalBps: plan.requiredTotalBps,
+          bitTimeline,
+          rawDownloadUrl: `/api/download-onebit/${singleBit}`,
+        };
+      }
+
       res.json({
         success: true,
         fileId: outFilename,
@@ -486,13 +665,21 @@ app.post('/api/compress', async (req, res) => {
           ...outMeta,
           targetWidth: targetW,
           targetHeight: targetH,
-          audioSampleRate: targetSampleRate,
-          audioBitDepth,
+          bitrateKbps: settings.oneBitMode && Number(settings.videoBitrateKbps) === 0 ? 0 : outMeta.bitrateKbps,
+          fps: settings.oneBitMode && Number(settings.fps) === 0 ? 0 : outMeta.fps,
+          audioSampleRate: !inputMeta.hasAudio || settings.audioMode === 'mute' || Number(volumePctRaw) <= 0 ? 0 : targetSampleRate,
+          audioBitDepth: settings.oneBitMode ? 1 : audioBitDepth,
           audioTierLabel,
           memeAudioMode: settings.memeAudioMode || 'none',
           audioOverdriveDb: settings.audioOverdriveDb || 0,
+          oneBitPayload,
         },
-        savings,
+        savings: settings.oneBitMode && oneBitPayload
+          ? {
+              bytesSaved: Math.max(0, inputMeta.sizeBytes - 0.125),
+              percentSaved: oneBitPayload.percentSaved,
+            }
+          : savings,
       });
     });
   } catch (err: any) {
@@ -578,6 +765,26 @@ app.get('/api/download/:fileId', (req, res) => {
 
   const stream = fs.createReadStream(filePath);
   stream.pipe(res);
+});
+
+// API: Download literal 1-bit binary file (1 bit stored in minimum 1-byte container)
+app.get('/api/download-onebit/:bitValue', (req, res) => {
+  const bit = req.params.bitValue === '0' ? 0 : 1;
+  const buf = Buffer.from([bit]);
+  res.setHeader('Content-Type', 'application/octet-stream');
+  res.setHeader('Content-Disposition', `attachment; filename="compressed_1bit_val_${bit}.bin"`);
+  res.setHeader('Content-Length', 1);
+  res.setHeader('Cache-Control', 'no-cache, no-store, must-revalidate');
+  res.send(buf);
+});
+
+// API: Download literal 0-bit / 0-byte empty file (absolute nothingness)
+app.get('/api/download-zerobit', (_req, res) => {
+  res.setHeader('Content-Type', 'application/octet-stream');
+  res.setHeader('Content-Disposition', 'attachment; filename="compressed_0_bits_void.bin"');
+  res.setHeader('Content-Length', 0);
+  res.setHeader('Cache-Control', 'no-cache, no-store, must-revalidate');
+  res.send(Buffer.alloc(0));
 });
 
 // Serve frontend with Vite in dev, or dist in prod

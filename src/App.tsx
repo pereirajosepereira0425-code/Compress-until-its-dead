@@ -64,6 +64,24 @@ export default function App() {
       targetHeight?: number;
       memeAudioMode?: string;
       audioOverdriveDb?: number;
+      oneBitPayload?: {
+        bit: 0 | 1;
+        bitsCount: number;
+        bytesEquivalent: number;
+        originalBits?: number;
+        compressionRatio?: number;
+        percentSaved?: number;
+        requiredTotalBps?: number;
+        bitTimeline: (0 | 1)[];
+        rawDownloadUrl: string;
+      };
+      zeroBitPayload?: {
+        bitsCount: 0;
+        bytesEquivalent: 0;
+        originalBits: number;
+        percentSaved: number;
+        rawDownloadUrl: string;
+      };
     };
     savings: { bytesSaved: number; percentSaved: number };
   } | null>(null);
@@ -170,10 +188,29 @@ export default function App() {
     setSelectedPresetId(preset.id);
     let targetW = videoMetadata?.width || 1280;
     let targetH = videoMetadata?.height || 720;
-    
-    // Calculate preset target dimensions for input population
+
+    // Cleanly reset optional destruction flags so previous extreme presets don't leak onto clean ones
+    const resetBaseline: Partial<CompressionSettings> = {
+      compressionFocus: 'both',
+      oneBitMode: false,
+      zeroBitMode: false,
+      monochromeOneBit: false,
+      memeAudioMode: 'none',
+      audioOverdriveDb: 0,
+      audioHardClip: false,
+      audioMetallicResonance: false,
+      audioBandpass: false,
+      audioVolumePercent: 100,
+      audioBitDepth: 16,
+      audioMode: 'keep',
+      syncAudioResolution: true,
+      chunkyPixelUpscale: false,
+      fpsMode: 'original',
+    };
+
     const dummySettings: CompressionSettings = {
       ...settings,
+      ...resetBaseline,
       ...preset.settings,
     };
     if (videoMetadata) {
@@ -182,13 +219,12 @@ export default function App() {
       targetH = dims.height;
     }
 
-    setSettings((prev) => ({
-      ...prev,
-      ...preset.settings,
-      customWidth: targetW,
-      customHeight: targetH,
+    setSettings({
+      ...dummySettings,
+      customWidth: preset.settings.customWidth ?? targetW,
+      customHeight: preset.settings.customHeight ?? targetH,
       presetName: preset.name,
-    }));
+    });
   };
 
   // Execute Compression
@@ -237,10 +273,23 @@ export default function App() {
     setVideoTitle(`crushed_${videoTitle}`);
     setCompressionResult(null);
 
-    // Switch to even deeper death mode if not already
-    const deadPreset = COMPRESSION_PRESETS.find((p) => p.id === 'compress-until-dead');
-    if (deadPreset) {
-      handleSelectPreset(deadPreset);
+    if (settings.zeroBitMode) {
+      const zeroBitPreset = COMPRESSION_PRESETS.find((p) => p.id === 'zero-bit-void');
+      if (zeroBitPreset) {
+        handleSelectPreset(zeroBitPreset);
+      }
+    } else if (settings.oneBitMode) {
+      // Keep compressing in 1-bit singularity mode until audio & video are 1-bit
+      const oneBitPreset = COMPRESSION_PRESETS.find((p) => p.id === 'one-bit-singularity');
+      if (oneBitPreset) {
+        handleSelectPreset(oneBitPreset);
+      }
+    } else {
+      // Switch to even deeper death mode if not already
+      const deadPreset = COMPRESSION_PRESETS.find((p) => p.id === 'compress-until-dead');
+      if (deadPreset) {
+        handleSelectPreset(deadPreset);
+      }
     }
 
     setTimeout(() => {

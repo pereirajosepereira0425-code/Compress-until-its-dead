@@ -10,6 +10,24 @@ interface StatsCardProps {
     targetHeight?: number;
     memeAudioMode?: string;
     audioOverdriveDb?: number;
+    oneBitPayload?: {
+      bit: 0 | 1;
+      bitsCount: number;
+      bytesEquivalent: number;
+      originalBits?: number;
+      compressionRatio?: number;
+      percentSaved?: number;
+      requiredTotalBps?: number;
+      bitTimeline: (0 | 1)[];
+      rawDownloadUrl: string;
+    };
+    zeroBitPayload?: {
+      bitsCount: 0;
+      bytesEquivalent: 0;
+      originalBits: number;
+      percentSaved: number;
+      rawDownloadUrl: string;
+    };
   };
   savings: { bytesSaved: number; percentSaved: number };
   downloadUrl: string;
@@ -28,8 +46,8 @@ export const StatsCard: React.FC<StatsCardProps> = ({
   const [copied, setCopied] = useState(false);
   const [isDownloading, setIsDownloading] = useState(false);
 
-  const finalW = compressedMeta.targetWidth || compressedMeta.width;
-  const finalH = compressedMeta.targetHeight || compressedMeta.height;
+  const finalW = compressedMeta.targetWidth ?? compressedMeta.width;
+  const finalH = compressedMeta.targetHeight ?? compressedMeta.height;
   const totalPixels = finalW * finalH;
 
   const handleDownload = async () => {
@@ -73,27 +91,83 @@ export const StatsCard: React.FC<StatsCardProps> = ({
       <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 pb-4 border-b border-slate-800">
         <div>
           <span className="text-[10px] font-mono tracking-wider uppercase text-emerald-400 font-bold bg-emerald-950/60 border border-emerald-800/80 px-2 py-0.5 rounded">
-            Compression Accomplished
+            {compressedMeta.zeroBitPayload
+              ? '⚫ 0-Bit Void Singularity'
+              : compressedMeta.oneBitPayload
+              ? '⚛️ 1-Bit Binary Singularity'
+              : 'Compression Accomplished'}
           </span>
           <h2 className="text-2xl font-extrabold text-white mt-1 flex items-center gap-2">
-            <span>🎉</span>
-            <span>Saved {savings.percentSaved}% of File Size</span>
+            <span>
+              {compressedMeta.zeroBitPayload ? '⚫' : compressedMeta.oneBitPayload ? '⚛️' : '🎉'}
+            </span>
+            <span>
+              {compressedMeta.zeroBitPayload
+                ? 'Video Size: 0 Bits (0 Bytes — Pure Void)'
+                : compressedMeta.oneBitPayload
+                ? `Video Size: 1 Bit (0.125 Bytes — Bit: ${compressedMeta.oneBitPayload.bit})`
+                : `Saved ${savings.percentSaved}% of File Size`}
+            </span>
           </h2>
           <p className="text-xs text-slate-400 mt-0.5">
-            Reduced from {formatBytes(originalMeta.sizeBytes)} down to {formatBytes(compressedMeta.sizeBytes)} ({formatBytes(savings.bytesSaved)} shaved off).
+            {compressedMeta.zeroBitPayload ? (
+              <>
+                Erased <strong className="text-white font-mono">100.0%</strong> ({compressedMeta.zeroBitPayload.originalBits.toLocaleString()} bits →{' '}
+                <strong className="text-cyan-300 font-mono">0 bits / 0 Bytes</strong>). Complete nothingness.
+              </>
+            ) : compressedMeta.oneBitPayload ? (
+              <>
+                Crushed by{' '}
+                <strong className="text-cyan-300 font-mono">
+                  {(compressedMeta.oneBitPayload.compressionRatio || originalMeta.sizeBytes * 8).toLocaleString()} : 1
+                </strong>{' '}
+                ({compressedMeta.oneBitPayload.percentSaved ?? savings.percentSaved}% reduction from{' '}
+                {(compressedMeta.oneBitPayload.originalBits || originalMeta.sizeBytes * 8).toLocaleString()} bits →{' '}
+                <strong className="text-white font-mono">1 bit</strong> at{' '}
+                <strong className="text-cyan-200 font-mono">
+                  {compressedMeta.oneBitPayload.requiredTotalBps ?? 0.004} bps
+                </strong>
+                ).
+              </>
+            ) : (
+              <>
+                Reduced from {formatBytes(originalMeta.sizeBytes)} down to {formatBytes(compressedMeta.sizeBytes)} ({formatBytes(savings.bytesSaved)} shaved off).
+              </>
+            )}
           </p>
         </div>
 
         {/* Action Buttons */}
-        <div className="flex items-center gap-2 shrink-0">
-          <button
-            onClick={handleDownload}
-            disabled={isDownloading}
-            className="px-5 py-2.5 text-xs font-bold text-slate-950 bg-gradient-to-r from-emerald-400 via-teal-300 to-amber-300 hover:from-emerald-300 hover:to-amber-200 rounded-xl shadow-lg shadow-emerald-950/40 transition-all hover:scale-105 active:scale-95 flex items-center gap-2 cursor-pointer disabled:opacity-50"
-          >
-            <span>{isDownloading ? '⏳' : '⬇️'}</span>
-            <span>{isDownloading ? 'Downloading MP4...' : 'Download Video (MP4)'}</span>
-          </button>
+        <div className="flex flex-wrap items-center gap-2 shrink-0">
+          {compressedMeta.zeroBitPayload ? (
+            <a
+              href={compressedMeta.zeroBitPayload.rawDownloadUrl}
+              download="compressed_0_bits_void.bin"
+              className="px-5 py-2.5 text-xs font-bold text-slate-950 bg-gradient-to-r from-white via-slate-200 to-cyan-200 hover:from-slate-100 hover:to-cyan-100 rounded-xl shadow-lg transition-all hover:scale-105 active:scale-95 flex items-center gap-2 cursor-pointer"
+            >
+              <span>⚫</span>
+              <span>Download 0-Bit File (0 Bytes)</span>
+            </a>
+          ) : (
+            <button
+              onClick={handleDownload}
+              disabled={isDownloading}
+              className="px-5 py-2.5 text-xs font-bold text-slate-950 bg-gradient-to-r from-emerald-400 via-teal-300 to-amber-300 hover:from-emerald-300 hover:to-amber-200 rounded-xl shadow-lg shadow-emerald-950/40 transition-all hover:scale-105 active:scale-95 flex items-center gap-2 cursor-pointer disabled:opacity-50"
+            >
+              <span>{isDownloading ? '⏳' : '⬇️'}</span>
+              <span>{isDownloading ? 'Downloading MP4...' : 'Download Video (MP4)'}</span>
+            </button>
+          )}
+          {compressedMeta.oneBitPayload && (
+            <a
+              href={compressedMeta.oneBitPayload.rawDownloadUrl}
+              download={`compressed_1bit_val_${compressedMeta.oneBitPayload.bit}.bin`}
+              className="px-3.5 py-2.5 text-xs font-bold text-cyan-200 bg-cyan-950/70 hover:bg-cyan-900/80 rounded-xl border border-cyan-700/80 transition-colors flex items-center gap-1.5 cursor-pointer"
+            >
+              <span>⚛️</span>
+              <span>Download 1-Bit (.bin)</span>
+            </a>
+          )}
           <button
             onClick={handleCopy}
             className="px-3.5 py-2.5 text-xs font-medium text-slate-300 bg-slate-800 hover:bg-slate-700 rounded-xl border border-slate-700 transition-colors flex items-center gap-1.5 cursor-pointer"
@@ -133,7 +207,11 @@ export const StatsCard: React.FC<StatsCardProps> = ({
           <div className="text-[11px] text-slate-400 flex items-center justify-between">
             <span>Audio Resolution</span>
             <span className="text-rose-400 font-mono text-[10px]">
-              {compressedMeta.audioBitDepth ? `${compressedMeta.audioBitDepth}-bit Depth` : '16-bit'}
+              {compressedMeta.audioBitDepth !== undefined
+                ? compressedMeta.audioBitDepth === 0
+                  ? '0-bit Void'
+                  : `${compressedMeta.audioBitDepth}-bit Depth`
+                : '16-bit'}
             </span>
           </div>
           <div className="text-base font-bold text-white font-mono flex items-center gap-2">
@@ -142,7 +220,9 @@ export const StatsCard: React.FC<StatsCardProps> = ({
             </span>
             <span>→</span>
             <span className="text-rose-300">
-              {compressedMeta.audioSampleRate || 'Muted'} Hz
+              {compressedMeta.zeroBitPayload || compressedMeta.audioSampleRate === 0
+                ? '0 Hz (Muted)'
+                : `${compressedMeta.audioSampleRate ?? 44100} Hz`}
             </span>
           </div>
           <div className="text-[10px] text-slate-500 flex items-center justify-between">

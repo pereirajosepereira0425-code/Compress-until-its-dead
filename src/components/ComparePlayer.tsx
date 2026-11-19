@@ -10,6 +10,24 @@ interface ComparePlayerProps {
     audioTierLabel?: string;
     targetWidth?: number;
     targetHeight?: number;
+    oneBitPayload?: {
+      bit: 0 | 1;
+      bitsCount: number;
+      bytesEquivalent: number;
+      originalBits?: number;
+      compressionRatio?: number;
+      percentSaved?: number;
+      requiredTotalBps?: number;
+      bitTimeline: (0 | 1)[];
+      rawDownloadUrl: string;
+    };
+    zeroBitPayload?: {
+      bitsCount: 0;
+      bytesEquivalent: 0;
+      originalBits: number;
+      percentSaved: number;
+      rawDownloadUrl: string;
+    };
   };
 }
 
@@ -32,7 +50,7 @@ export const ComparePlayer: React.FC<ComparePlayerProps> = ({
   const [isMuted, setIsMuted] = useState<boolean>(false);
   const [pixelatedRendering, setPixelatedRendering] = useState<boolean>(true);
 
-  // Sync playback
+  // Sync playback and enforce active audio track synchronously before play()
   const togglePlay = () => {
     if (!origVideoRef.current || !compVideoRef.current) return;
     if (isPlaying) {
@@ -40,8 +58,18 @@ export const ComparePlayer: React.FC<ComparePlayerProps> = ({
       compVideoRef.current.pause();
       setIsPlaying(false);
     } else {
-      origVideoRef.current.play().catch(() => {});
-      compVideoRef.current.play().catch(() => {});
+      compVideoRef.current.muted = isMuted || audioSource !== 'compressed';
+      origVideoRef.current.muted = isMuted || audioSource !== 'original';
+      compVideoRef.current.volume = 1;
+      origVideoRef.current.volume = 1;
+      // Start active audio video first so Chrome/Android Chrome grants audio focus cleanly
+      if (audioSource === 'compressed') {
+        compVideoRef.current.play().catch(() => {});
+        origVideoRef.current.play().catch(() => {});
+      } else {
+        origVideoRef.current.play().catch(() => {});
+        compVideoRef.current.play().catch(() => {});
+      }
       setIsPlaying(true);
     }
   };
@@ -56,30 +84,35 @@ export const ComparePlayer: React.FC<ComparePlayerProps> = ({
 
   const handleTimeUpdate = () => {
     if (compVideoRef.current) {
-      setCurrentTime(compVideoRef.current.currentTime);
-      if (!duration && compVideoRef.current.duration) {
+      const t = compVideoRef.current.currentTime;
+      setCurrentTime(t);
+      if (compVideoRef.current.duration && Number.isFinite(compVideoRef.current.duration)) {
         setDuration(compVideoRef.current.duration);
+      }
+      // Keep original video locked in sync even at 0.5fps / 1fps crushed framerates
+      if (origVideoRef.current && Math.abs(origVideoRef.current.currentTime - t) > 0.35) {
+        origVideoRef.current.currentTime = t;
       }
     }
   };
 
-  // Switch which audio track is active
+  // Switch which audio track is active (re-run whenever video URLs change too)
   useEffect(() => {
     if (origVideoRef.current && compVideoRef.current) {
+      compVideoRef.current.volume = 1;
+      origVideoRef.current.volume = 1;
       if (isMuted) {
         origVideoRef.current.muted = true;
         compVideoRef.current.muted = true;
+      } else if (audioSource === 'compressed') {
+        compVideoRef.current.muted = false;
+        origVideoRef.current.muted = true;
       } else {
-        if (audioSource === 'compressed') {
-          compVideoRef.current.muted = false;
-          origVideoRef.current.muted = true;
-        } else {
-          origVideoRef.current.muted = false;
-          compVideoRef.current.muted = true;
-        }
+        origVideoRef.current.muted = false;
+        compVideoRef.current.muted = true;
       }
     }
-  }, [audioSource, isMuted]);
+  }, [audioSource, isMuted, compressedUrl, originalUrl]);
 
   // Drag slider mechanics
   const handleMouseDown = () => setIsDragging(true);
@@ -177,6 +210,7 @@ export const ComparePlayer: React.FC<ComparePlayerProps> = ({
         <video
           ref={compVideoRef}
           src={compressedUrl}
+          muted={isMuted || audioSource !== 'compressed'}
           playsInline
           loop
           onTimeUpdate={handleTimeUpdate}
@@ -192,6 +226,7 @@ export const ComparePlayer: React.FC<ComparePlayerProps> = ({
           <video
             ref={origVideoRef}
             src={originalUrl}
+            muted={isMuted || audioSource !== 'original'}
             playsInline
             loop
             className="absolute inset-0 w-full h-full object-contain max-w-none"
@@ -217,7 +252,11 @@ export const ComparePlayer: React.FC<ComparePlayerProps> = ({
           Original ({originalMeta ? `${originalMeta.width}x${originalMeta.height}` : 'Source'})
         </div>
         <div className="absolute top-3 right-3 z-30 pointer-events-none bg-black/70 backdrop-blur-md border border-slate-700/80 rounded-lg px-2.5 py-1 text-xs font-semibold text-rose-400">
-          Compressed ({compressedMeta ? `${compressedMeta.targetWidth || compressedMeta.width}x${compressedMeta.targetHeight || compressedMeta.height}` : 'Crushed'})
+          {compressedMeta?.zeroBitPayload
+            ? '0-Bit Void (0×0)'
+            : compressedMeta?.oneBitPayload
+            ? `1-Bit (${compressedMeta.targetWidth ?? compressedMeta.width}×${compressedMeta.targetHeight ?? compressedMeta.height})`
+            : `Compressed (${compressedMeta ? `${compressedMeta.targetWidth ?? compressedMeta.width}x${compressedMeta.targetHeight ?? compressedMeta.height}` : 'Crushed'})`}
         </div>
       </div>
 
@@ -263,23 +302,106 @@ export const ComparePlayer: React.FC<ComparePlayerProps> = ({
           </div>
           <div className="bg-slate-900/60 p-2 rounded-lg border border-slate-800">
             <span className="text-slate-400">Compressed Size:</span>{' '}
-            <span className="font-mono text-rose-400 font-bold">
-              {compressedMeta ? formatBytes(compressedMeta.sizeBytes) : '—'}
+            <span className={`font-mono font-bold ${
+              compressedMeta?.zeroBitPayload
+                ? 'text-white'
+                : compressedMeta?.oneBitPayload
+                ? 'text-cyan-300'
+                : 'text-rose-400'
+            }`}>
+              {compressedMeta?.zeroBitPayload
+                ? '0 bits (0 Bytes)'
+                : compressedMeta?.oneBitPayload
+                ? '1 bit (0.125 B)'
+                : compressedMeta
+                ? formatBytes(compressedMeta.sizeBytes)
+                : '—'}
             </span>
           </div>
           <div className="bg-slate-900/60 p-2 rounded-lg border border-slate-800">
             <span className="text-slate-400">Audio Sample Rate:</span>{' '}
             <span className="font-mono text-amber-300 font-bold">
-              {compressedMeta?.audioSampleRate ? `${compressedMeta.audioSampleRate} Hz` : 'Muted'}
+              {compressedMeta?.audioSampleRate ? `${compressedMeta.audioSampleRate} Hz` : compressedMeta?.zeroBitPayload ? '0 Hz' : 'Muted'}
             </span>
           </div>
           <div className="bg-slate-900/60 p-2 rounded-lg border border-slate-800">
             <span className="text-slate-400">Audio Bit Depth:</span>{' '}
             <span className="font-mono text-emerald-400 font-bold">
-              {compressedMeta?.audioBitDepth ? `${compressedMeta.audioBitDepth}-bit` : '16-bit'}
+              {compressedMeta?.zeroBitPayload
+                ? '0-bit'
+                : compressedMeta?.audioBitDepth
+                ? `${compressedMeta.audioBitDepth}-bit`
+                : '16-bit'}
             </span>
           </div>
         </div>
+
+        {/* 0-Bit Void Annihilation Banner */}
+        {compressedMeta?.zeroBitPayload && (
+          <div className="mt-2 bg-zinc-950/90 border border-slate-600/70 rounded-xl p-3 flex items-center justify-between gap-3">
+            <div className="flex items-center gap-3">
+              <div className="w-11 h-11 rounded-lg font-mono text-xl font-black flex items-center justify-center border border-slate-700 bg-black text-slate-400">
+                ∅
+              </div>
+              <div>
+                <div className="text-xs font-bold text-white">
+                  ⚫ 0 Bits Remaining — Complete Digital Void (0 Bytes)
+                </div>
+                <p className="text-[10px] text-slate-400">
+                  All {compressedMeta.zeroBitPayload.originalBits.toLocaleString()} source bits have been compressed down to nothingness (100% erased).
+                </p>
+              </div>
+            </div>
+          </div>
+        )}
+
+        {/* Live 1-Bit Binary Visualizer (when 1-Bit before Byte preset is active) */}
+        {compressedMeta?.oneBitPayload && (
+          <div className="mt-2 bg-slate-900/90 border border-cyan-800/70 rounded-xl p-3 flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+            <div className="flex items-center gap-3">
+              <div
+                className={`w-11 h-11 rounded-lg font-mono text-2xl font-black flex items-center justify-center border shadow-inner transition-colors ${
+                  (compressedMeta.oneBitPayload.bitTimeline[Math.floor(currentTime)] ??
+                    compressedMeta.oneBitPayload.bit) === 1
+                    ? 'bg-white text-slate-950 border-cyan-300'
+                    : 'bg-slate-950 text-cyan-400 border-cyan-800'
+                }`}
+              >
+                {compressedMeta.oneBitPayload.bitTimeline[Math.floor(currentTime)] ??
+                  compressedMeta.oneBitPayload.bit}
+              </div>
+              <div>
+                <div className="text-xs font-bold text-cyan-300 flex items-center gap-1.5">
+                  <span>⚛️ Live Single Bit (0 or 1) — 0.125 Bytes</span>
+                </div>
+                <p className="text-[10px] text-slate-400">
+                  1 bit (smaller than 1 Byte / KB / MB / GB) flipping between{' '}
+                  <span className="font-mono text-slate-200">0</span> and{' '}
+                  <span className="font-mono text-white">1</span> as the video plays.
+                </p>
+              </div>
+            </div>
+            <div className="flex flex-wrap gap-1 font-mono text-[10px] bg-slate-950/90 border border-slate-800 rounded-lg px-2.5 py-1.5 max-w-full overflow-x-auto">
+              {compressedMeta.oneBitPayload.bitTimeline.map((b, idx) => {
+                const isActive = idx === Math.floor(currentTime);
+                return (
+                  <span
+                    key={idx}
+                    className={`px-1 rounded ${
+                      isActive
+                        ? 'bg-cyan-400 text-slate-950 font-black'
+                        : b === 1
+                        ? 'text-white'
+                        : 'text-slate-500'
+                    }`}
+                  >
+                    {b}
+                  </span>
+                );
+              })}
+            </div>
+          </div>
+        )}
       </div>
     </div>
   );

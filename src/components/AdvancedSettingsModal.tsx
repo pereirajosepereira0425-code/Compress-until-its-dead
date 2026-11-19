@@ -270,15 +270,17 @@ export const AdvancedSettingsModal: React.FC<AdvancedSettingsModalProps> = ({
                       <label className="text-[11px] text-slate-400">Width (pixels):</label>
                       <input
                         type="number"
-                        min="1"
+                        min={settings.oneBitMode ? 0 : 1}
                         max="8192"
                         value={settings.customWidth ?? currentW}
-                        onChange={(e) =>
+                        onChange={(e) => {
+                          const parsed = parseInt(e.target.value, 10);
+                          const minVal = settings.oneBitMode ? 0 : 1;
                           setSettings((prev) => ({
                             ...prev,
-                            customWidth: Math.max(1, parseInt(e.target.value, 10) || 1),
-                          }))
-                        }
+                            customWidth: Number.isNaN(parsed) ? minVal : Math.max(minVal, parsed),
+                          }));
+                        }}
                         className="w-full bg-slate-950 border border-slate-700 rounded-lg px-3 py-2 text-sm text-white font-mono focus:border-emerald-500 focus:outline-none"
                       />
                     </div>
@@ -286,15 +288,17 @@ export const AdvancedSettingsModal: React.FC<AdvancedSettingsModalProps> = ({
                       <label className="text-[11px] text-slate-400">Height (pixels):</label>
                       <input
                         type="number"
-                        min="1"
+                        min={settings.oneBitMode ? 0 : 1}
                         max="8192"
                         value={settings.customHeight ?? currentH}
-                        onChange={(e) =>
+                        onChange={(e) => {
+                          const parsed = parseInt(e.target.value, 10);
+                          const minVal = settings.oneBitMode ? 0 : 1;
                           setSettings((prev) => ({
                             ...prev,
-                            customHeight: Math.max(1, parseInt(e.target.value, 10) || 1),
-                          }))
-                        }
+                            customHeight: Number.isNaN(parsed) ? minVal : Math.max(minVal, parsed),
+                          }));
+                        }}
                         className="w-full bg-slate-950 border border-slate-700 rounded-lg px-3 py-2 text-sm text-white font-mono focus:border-emerald-500 focus:outline-none"
                       />
                     </div>
@@ -425,7 +429,7 @@ export const AdvancedSettingsModal: React.FC<AdvancedSettingsModalProps> = ({
                     <div className="flex justify-between items-center text-xs">
                       <span className="text-slate-300 font-semibold">Audio Sample Rate (Temporal Resolution):</span>
                       <span className="font-mono text-rose-400 font-bold">
-                        {settings.audioSampleRate || 44100} Hz
+                        {settings.audioSampleRate ?? 44100} Hz
                       </span>
                     </div>
                     <div className="grid grid-cols-5 gap-1.5">
@@ -458,16 +462,18 @@ export const AdvancedSettingsModal: React.FC<AdvancedSettingsModalProps> = ({
                       <label className="text-[11px] text-slate-400">Type Custom Sample Rate (Hz):</label>
                       <input
                         type="number"
-                        min="1"
+                        min={settings.oneBitMode ? 0 : 1}
                         max="48000"
                         step="1"
-                        value={settings.audioSampleRate || 44100}
-                        onChange={(e) =>
+                        value={settings.audioSampleRate ?? 44100}
+                        onChange={(e) => {
+                          const parsed = parseInt(e.target.value, 10);
+                          const minVal = settings.oneBitMode ? 0 : 1;
                           setSettings((prev) => ({
                             ...prev,
-                            audioSampleRate: Math.max(1, parseInt(e.target.value, 10) || 1),
-                          }))
-                        }
+                            audioSampleRate: Number.isNaN(parsed) ? minVal : Math.max(minVal, parsed),
+                          }));
+                        }}
                         className="w-full bg-slate-950 border border-slate-700 rounded-lg px-2.5 py-1.5 text-xs text-rose-300 font-mono focus:border-rose-500 focus:outline-none"
                       />
                     </div>
@@ -478,7 +484,7 @@ export const AdvancedSettingsModal: React.FC<AdvancedSettingsModalProps> = ({
                     <div className="flex justify-between items-center text-xs">
                       <span className="text-slate-300 font-semibold">Audio Bit Resolution (Bitcrusher Depth):</span>
                       <span className="font-mono text-amber-400 font-bold">
-                        {(settings as any).audioBitDepth || 16}-bit
+                        {settings.audioBitDepth ?? 16}-bit
                       </span>
                     </div>
                     <div className="grid grid-cols-6 gap-1.5">

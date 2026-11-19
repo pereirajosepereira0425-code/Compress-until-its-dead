@@ -7,6 +7,8 @@ import {
   calculateDimensionsFromBlockSize,
   applyMemeAudioPreset,
   getMemeAudioDescription,
+  calculateOneBitCompressionStats,
+  formatBytes,
 } from '../utils/compressionMath';
 
 interface CustomInputsWorkbenchProps {
@@ -22,30 +24,42 @@ export const CustomInputsWorkbench: React.FC<CustomInputsWorkbenchProps> = ({
 }) => {
   const origW = metadata.width || 1280;
   const origH = metadata.height || 720;
+  const minNumeric = settings.oneBitMode ? 0 : 1;
   const currentW = settings.customWidth ?? origW;
   const currentH = settings.customHeight ?? origH;
 
+  const parseSafeNum = (raw: string, fallback: number, floor: number): number => {
+    const parsed = parseFloat(raw);
+    if (Number.isNaN(parsed)) return fallback;
+    return Math.max(floor, parsed);
+  };
+
   const handleWidthChange = (val: number) => {
-    const newW = Math.max(1, val);
+    const newW = Math.max(minNumeric, Math.round(val));
     let newH = currentH;
-    if (settings.maintainAspectRatio) {
+    if (settings.maintainAspectRatio && newW > 0) {
       const aspect = origW / origH;
-      newH = Math.max(1, Math.round(newW / aspect));
+      newH = Math.max(minNumeric, Math.round(newW / aspect));
+    } else if (newW === 0 && settings.oneBitMode) {
+      newH = 0;
     }
     onChangeSettings({
       ...settings,
       resolutionMode: 'custom',
       customWidth: newW,
       customHeight: newH,
+      totalPixels: newW * newH,
     });
   };
 
   const handleHeightChange = (val: number) => {
-    const newH = Math.max(1, val);
+    const newH = Math.max(minNumeric, Math.round(val));
     let newW = currentW;
-    if (settings.maintainAspectRatio) {
+    if (settings.maintainAspectRatio && newH > 0) {
       const aspect = origW / origH;
-      newW = Math.max(1, Math.round(newH * aspect));
+      newW = Math.max(minNumeric, Math.round(newH * aspect));
+    } else if (newH === 0 && settings.oneBitMode) {
+      newW = 0;
     }
 
     // If audio sync is active, also sync audio to the new typed height!
@@ -54,6 +68,7 @@ export const CustomInputsWorkbench: React.FC<CustomInputsWorkbenchProps> = ({
       resolutionMode: 'custom',
       customWidth: newW,
       customHeight: newH,
+      totalPixels: newW * newH,
     };
 
     if (settings.syncAudioResolution) {
@@ -71,8 +86,8 @@ export const CustomInputsWorkbench: React.FC<CustomInputsWorkbenchProps> = ({
   };
 
   const handleTotalPixelsChange = (pixels: number) => {
-    const safePixels = Math.max(1, pixels);
-    const { width, height } = calculateDimensionsFromPixelCount(origW, origH, safePixels);
+    const safePixels = Math.max(minNumeric, Math.round(pixels));
+    const { width, height } = calculateDimensionsFromPixelCount(origW, origH, safePixels, Boolean(settings.oneBitMode));
     let updatedSettings: CompressionSettings = {
       ...settings,
       resolutionMode: 'pixel_count',
@@ -126,7 +141,7 @@ export const CustomInputsWorkbench: React.FC<CustomInputsWorkbenchProps> = ({
       ...settings,
       syncAudioResolution: false,
       audioMode: 'custom',
-      audioSampleRate: Math.max(1, hz),
+      audioSampleRate: Math.max(minNumeric, Math.round(hz)),
     });
   };
 
@@ -135,7 +150,7 @@ export const CustomInputsWorkbench: React.FC<CustomInputsWorkbenchProps> = ({
       ...settings,
       syncAudioResolution: false,
       audioMode: 'custom',
-      audioBitDepth: Math.max(1, Math.min(16, bits)),
+      audioBitDepth: Math.max(minNumeric, Math.min(16, Math.round(bits))),
     } as any);
   };
 
@@ -144,7 +159,7 @@ export const CustomInputsWorkbench: React.FC<CustomInputsWorkbenchProps> = ({
       ...settings,
       syncAudioResolution: false,
       audioMode: 'custom',
-      audioBitrateKbps: Math.max(1, kbps),
+      audioBitrateKbps: Math.max(minNumeric, Math.round(kbps)),
     });
   };
 
@@ -152,7 +167,7 @@ export const CustomInputsWorkbench: React.FC<CustomInputsWorkbenchProps> = ({
     onChangeSettings({
       ...settings,
       fpsMode: 'custom',
-      fps: Math.max(0.5, fps),
+      fps: Math.max(settings.oneBitMode ? 0 : 0.25, fps),
     });
   };
 
@@ -160,7 +175,7 @@ export const CustomInputsWorkbench: React.FC<CustomInputsWorkbenchProps> = ({
     onChangeSettings({
       ...settings,
       mode: 'bitrate',
-      videoBitrateKbps: Math.max(1, kbps),
+      videoBitrateKbps: Math.max(minNumeric, Math.round(kbps)),
     });
   };
 
@@ -168,9 +183,13 @@ export const CustomInputsWorkbench: React.FC<CustomInputsWorkbenchProps> = ({
     onChangeSettings({
       ...settings,
       mode: 'crf',
-      crf: Math.max(0, Math.min(63, crf)),
+      crf: Math.max(0, Math.min(63, Math.round(crf))),
     });
   };
+
+  const oneBitPlan = settings.oneBitMode
+    ? calculateOneBitCompressionStats(metadata.sizeBytes, metadata.durationSeconds)
+    : null;
 
   return (
     <div className="w-full space-y-4">
@@ -278,6 +297,45 @@ export const CustomInputsWorkbench: React.FC<CustomInputsWorkbenchProps> = ({
         </div>
       </div>
 
+      {/* Live 1-Bit Compression Calculator (when 1-Bit Mode is Active) */}
+      {oneBitPlan && (
+        <div className="bg-gradient-to-r from-cyan-950/60 via-slate-900 to-slate-950 border border-cyan-500/60 rounded-2xl p-4 shadow-xl space-y-2">
+          <div className="flex flex-wrap items-center justify-between gap-2">
+            <div className="flex items-center gap-2">
+              <span className="text-base">⚛️</span>
+              <h4 className="text-xs sm:text-sm font-bold text-cyan-200">
+                1-Bit Singularity Push Calculator (0 Allowed on All Video Controls)
+              </h4>
+            </div>
+            <span className="text-[10px] font-mono px-2 py-0.5 rounded bg-cyan-950 border border-cyan-700 text-cyan-300 font-bold">
+              Target: 1 bit (0.125 Bytes)
+            </span>
+          </div>
+          <div className="grid grid-cols-2 sm:grid-cols-4 gap-2 text-[11px] font-mono">
+            <div className="bg-slate-950/80 border border-slate-800 rounded-lg p-2">
+              <span className="text-slate-400 block text-[10px]">Source Bits</span>
+              <span className="text-white font-bold">{oneBitPlan.originalBits.toLocaleString()} bits</span>
+              <span className="text-slate-500 block text-[9px]">({formatBytes(metadata.sizeBytes)})</span>
+            </div>
+            <div className="bg-slate-950/80 border border-slate-800 rounded-lg p-2">
+              <span className="text-slate-400 block text-[10px]">Push Ratio Needed</span>
+              <span className="text-cyan-300 font-bold">{oneBitPlan.compressionRatio.toLocaleString()} : 1</span>
+              <span className="text-emerald-400 block text-[9px]">{oneBitPlan.percentSaved}% crushed</span>
+            </div>
+            <div className="bg-slate-950/80 border border-slate-800 rounded-lg p-2">
+              <span className="text-slate-400 block text-[10px]">Target Budget / sec</span>
+              <span className="text-amber-300 font-bold">{oneBitPlan.requiredTotalBps} bps</span>
+              <span className="text-slate-500 block text-[9px]">Video forced to 0 (QP 51)</span>
+            </div>
+            <div className="bg-slate-950/80 border border-slate-800 rounded-lg p-2">
+              <span className="text-slate-400 block text-[10px]">Audio Cascade</span>
+              <span className="text-rose-300 font-bold">16→4→2→1-bit</span>
+              <span className="text-slate-500 block text-[9px]">Compresses until 1-bit</span>
+            </div>
+          </div>
+        </div>
+      )}
+
       <div className="flex items-center justify-between pt-1">
         <div className="flex items-center gap-2">
           <span className="text-base">⌨️</span>
@@ -285,11 +343,13 @@ export const CustomInputsWorkbench: React.FC<CustomInputsWorkbenchProps> = ({
             Custom Limitless Parameters
           </h3>
           <span className="text-xs text-emerald-400 bg-emerald-950/60 border border-emerald-800/80 px-2 py-0.5 rounded font-mono">
-            Direct Numeric Input
+            {settings.oneBitMode ? 'Zero (0) Unlocked' : 'Direct Numeric Input'}
           </span>
         </div>
         <span className="text-xs text-slate-400 hidden sm:inline">
-          Type any custom number below original — zero limits!
+          {settings.oneBitMode
+            ? '1-Bit Mode active — any box can go all the way down to 0!'
+            : 'Type any custom number below original — zero limits!'}
         </span>
       </div>
 
@@ -339,11 +399,11 @@ export const CustomInputsWorkbench: React.FC<CustomInputsWorkbenchProps> = ({
               <div className="relative">
                 <input
                   type="number"
-                  min="1"
+                  min={minNumeric}
                   max={origW * 2}
                   disabled={settings.compressionFocus === 'quality_only'}
                   value={settings.compressionFocus === 'quality_only' ? origW : currentW}
-                  onChange={(e) => handleWidthChange(parseInt(e.target.value, 10) || 1)}
+                  onChange={(e) => handleWidthChange(parseSafeNum(e.target.value, minNumeric, minNumeric))}
                   className="w-full bg-slate-950 border border-slate-700 rounded-lg px-2.5 py-1.5 text-xs text-emerald-300 font-mono font-bold focus:border-emerald-500 focus:outline-none disabled:opacity-40"
                 />
                 <span className="absolute right-2.5 top-1.5 text-[10px] text-slate-500 pointer-events-none">
@@ -361,11 +421,11 @@ export const CustomInputsWorkbench: React.FC<CustomInputsWorkbenchProps> = ({
               <div className="relative">
                 <input
                   type="number"
-                  min="1"
+                  min={minNumeric}
                   max={origH * 2}
                   disabled={settings.compressionFocus === 'quality_only'}
                   value={settings.compressionFocus === 'quality_only' ? origH : currentH}
-                  onChange={(e) => handleHeightChange(parseInt(e.target.value, 10) || 1)}
+                  onChange={(e) => handleHeightChange(parseSafeNum(e.target.value, minNumeric, minNumeric))}
                   className="w-full bg-slate-950 border border-slate-700 rounded-lg px-2.5 py-1.5 text-xs text-emerald-300 font-mono font-bold focus:border-emerald-500 focus:outline-none disabled:opacity-40"
                 />
                 <span className="absolute right-2.5 top-1.5 text-[10px] text-slate-500 pointer-events-none">
@@ -434,12 +494,12 @@ export const CustomInputsWorkbench: React.FC<CustomInputsWorkbenchProps> = ({
               <div className="relative">
                 <input
                   type="number"
-                  min="1"
+                  min={minNumeric}
                   max={origW * origH}
                   step="1"
-                  placeholder="e.g. 2304 for Gumball meme or 1 for single pixel"
-                  value={settings.totalPixels || (currentW * currentH)}
-                  onChange={(e) => handleTotalPixelsChange(parseInt(e.target.value, 10) || 1)}
+                  placeholder="e.g. 2304 for Gumball meme or 0 in 1-bit mode"
+                  value={settings.totalPixels ?? (currentW * currentH)}
+                  onChange={(e) => handleTotalPixelsChange(parseSafeNum(e.target.value, minNumeric, minNumeric))}
                   className="w-full bg-slate-950 border border-amber-500/50 focus:border-amber-400 rounded-lg px-2.5 py-1.5 text-xs text-amber-300 font-mono font-bold focus:outline-none"
                 />
                 <span className="absolute right-2.5 top-1.5 text-[10px] text-amber-400/70 pointer-events-none">
@@ -447,7 +507,7 @@ export const CustomInputsWorkbench: React.FC<CustomInputsWorkbenchProps> = ({
                 </span>
               </div>
               <p className="text-[10px] text-slate-400 leading-tight">
-                Type any number down to <strong className="text-amber-200">1</strong>! e.g. <strong className="text-amber-200">2304</strong> for the Darwin shooting star meme, or <strong className="text-rose-300">1</strong> for a single pixel.
+                Type any number down to <strong className="text-amber-200">{minNumeric}</strong>! e.g. <strong className="text-amber-200">2304</strong> for the Darwin meme, or <strong className="text-cyan-300">0</strong> in 1-Bit Singularity mode.
               </p>
 
               {/* Quick Pixel Count Buttons */}
@@ -457,7 +517,8 @@ export const CustomInputsWorkbench: React.FC<CustomInputsWorkbenchProps> = ({
                   { label: '👾 1,000 px', val: 1000 },
                   { label: '💀 500 px', val: 500 },
                   { label: '256 px', val: 256 },
-                  { label: '💀 1 px (Single Pixel)', val: 1 },
+                  { label: '💀 1 px', val: 1 },
+                  ...(settings.oneBitMode ? [{ label: '⚛️ 0 px (Void)', val: 0 }] : []),
                 ].map((p) => (
                   <button
                     key={p.label}
@@ -489,6 +550,30 @@ export const CustomInputsWorkbench: React.FC<CustomInputsWorkbenchProps> = ({
                   </span>
                   <p className="text-[10px] text-slate-400 leading-tight mt-0.5">
                     Nearest-neighbor upscale bakes giant sharp square pixels directly into the MP4 so it looks razor sharp and pixelated across Discord &amp; mobile players!
+                  </p>
+                </div>
+              </label>
+
+              {/* 1-Bit Binary Mode Checkbox */}
+              <label className="flex items-start gap-2 pt-2 pb-1 px-2.5 bg-cyan-950/20 border border-cyan-900/40 rounded-lg cursor-pointer hover:border-cyan-700/60 transition-colors">
+                <input
+                  type="checkbox"
+                  checked={Boolean(settings.oneBitMode || settings.monochromeOneBit)}
+                  onChange={(e) =>
+                    onChangeSettings({
+                      ...settings,
+                      monochromeOneBit: e.target.checked,
+                      oneBitMode: e.target.checked,
+                    })
+                  }
+                  className="mt-0.5 accent-cyan-400 rounded cursor-pointer"
+                />
+                <div className="text-[11px]">
+                  <span className="font-semibold text-cyan-300 flex items-center gap-1">
+                    <span>⚛️</span> 1-Bit Binary (0 or 1 — Unit Before Byte)
+                  </span>
+                  <p className="text-[10px] text-slate-400 leading-tight mt-0.5">
+                    Quantizes pixels to pure 1-bit monochrome (0 black / 1 white) and extracts the live changing single bit (0.125 Bytes).
                   </p>
                 </div>
               </label>
@@ -760,12 +845,12 @@ export const CustomInputsWorkbench: React.FC<CustomInputsWorkbenchProps> = ({
               <div className="relative">
                 <input
                   type="number"
-                  min="1"
+                  min={minNumeric}
                   max="48000"
                   step="1"
-                  value={settings.audioSampleRate || 44100}
+                  value={settings.audioSampleRate ?? 44100}
                   onChange={(e) =>
-                    handleAudioSampleRateChange(parseInt(e.target.value, 10) || 1)
+                    handleAudioSampleRateChange(parseSafeNum(e.target.value, minNumeric, minNumeric))
                   }
                   className="w-full bg-slate-950 border border-slate-700 rounded-lg px-2.5 py-1.5 text-xs text-rose-300 font-mono font-bold focus:border-rose-500 focus:outline-none"
                 />
@@ -792,7 +877,7 @@ export const CustomInputsWorkbench: React.FC<CustomInputsWorkbenchProps> = ({
               </div>
             </div>
 
-            {/* Audio Bit Depth (Bits) down to 1 */}
+            {/* Audio Bit Depth (Bits) down to 1 (or 0 in 1-bit mode) */}
             <div className="space-y-1">
               <div className="flex justify-between items-center text-[11px]">
                 <label className="text-slate-400 font-medium">Bit Depth</label>
@@ -801,12 +886,12 @@ export const CustomInputsWorkbench: React.FC<CustomInputsWorkbenchProps> = ({
               <div className="relative">
                 <input
                   type="number"
-                  min="1"
+                  min={minNumeric}
                   max="16"
                   step="1"
-                  value={(settings as any).audioBitDepth || 16}
+                  value={(settings as any).audioBitDepth ?? 16}
                   onChange={(e) =>
-                    handleAudioBitDepthChange(parseInt(e.target.value, 10) || 1)
+                    handleAudioBitDepthChange(parseSafeNum(e.target.value, minNumeric, minNumeric))
                   }
                   className="w-full bg-slate-950 border border-slate-700 rounded-lg px-2.5 py-1.5 text-xs text-rose-300 font-mono font-bold focus:border-rose-500 focus:outline-none"
                 />
@@ -841,11 +926,11 @@ export const CustomInputsWorkbench: React.FC<CustomInputsWorkbenchProps> = ({
               <label className="text-[11px] text-slate-400">Audio Bitrate (kbps)</label>
               <input
                 type="number"
-                min="1"
+                min={minNumeric}
                 max="320"
-                value={settings.audioBitrateKbps || 128}
+                value={settings.audioBitrateKbps ?? 128}
                 onChange={(e) =>
-                  handleAudioBitrateChange(parseInt(e.target.value, 10) || 64)
+                  handleAudioBitrateChange(parseSafeNum(e.target.value, minNumeric, minNumeric))
                 }
                 className="w-full bg-slate-950 border border-slate-700 rounded-lg px-2.5 py-1.5 text-xs text-rose-300 font-mono font-bold focus:border-rose-500 focus:outline-none"
               />
@@ -854,14 +939,14 @@ export const CustomInputsWorkbench: React.FC<CustomInputsWorkbenchProps> = ({
               <label className="text-[11px] text-slate-400">Volume Multiplier (%)</label>
               <input
                 type="number"
-                min="10"
+                min={minNumeric}
                 max="500"
-                step="10"
-                value={settings.audioVolumePercent || 100}
+                step="1"
+                value={settings.audioVolumePercent ?? 100}
                 onChange={(e) =>
                   onChangeSettings({
                     ...settings,
-                    audioVolumePercent: parseInt(e.target.value, 10) || 100,
+                    audioVolumePercent: parseSafeNum(e.target.value, 100, minNumeric),
                   })
                 }
                 className="w-full bg-slate-950 border border-slate-700 rounded-lg px-2.5 py-1.5 text-xs text-amber-300 font-mono font-bold focus:border-amber-500 focus:outline-none"
@@ -902,12 +987,12 @@ export const CustomInputsWorkbench: React.FC<CustomInputsWorkbenchProps> = ({
               <div className="relative">
                 <input
                   type="number"
-                  min="1"
+                  min={minNumeric}
                   max={metadata.bitrateKbps * 2}
                   disabled={settings.compressionFocus === 'resolution_only'}
-                  value={settings.videoBitrateKbps || 200}
+                  value={settings.videoBitrateKbps ?? 200}
                   onChange={(e) =>
-                    handleVideoBitrateChange(parseInt(e.target.value, 10) || 100)
+                    handleVideoBitrateChange(parseSafeNum(e.target.value, minNumeric, minNumeric))
                   }
                   className="w-full bg-slate-950 border border-slate-700 rounded-lg px-2.5 py-1.5 text-xs text-amber-300 font-mono font-bold focus:border-amber-500 focus:outline-none disabled:opacity-40"
                 />
@@ -926,11 +1011,11 @@ export const CustomInputsWorkbench: React.FC<CustomInputsWorkbenchProps> = ({
               <div className="relative">
                 <input
                   type="number"
-                  min="0.5"
+                  min={settings.oneBitMode ? 0 : 0.25}
                   max={metadata.fps || 60}
-                  step="1"
-                  value={settings.fps || metadata.fps || 30}
-                  onChange={(e) => handleFpsChange(parseFloat(e.target.value) || 30)}
+                  step="any"
+                  value={settings.fps ?? metadata.fps ?? 30}
+                  onChange={(e) => handleFpsChange(parseSafeNum(e.target.value, 0, settings.oneBitMode ? 0 : 0.25))}
                   className="w-full bg-slate-950 border border-slate-700 rounded-lg px-2.5 py-1.5 text-xs text-cyan-300 font-mono font-bold focus:border-cyan-500 focus:outline-none"
                 />
                 <span className="absolute right-2.5 top-1.5 text-[10px] text-slate-500 pointer-events-none">
@@ -954,7 +1039,7 @@ export const CustomInputsWorkbench: React.FC<CustomInputsWorkbenchProps> = ({
               max="63"
               disabled={settings.compressionFocus === 'resolution_only'}
               value={settings.compressionFocus === 'resolution_only' ? 18 : (settings.crf ?? 28)}
-              onChange={(e) => handleCrfChange(parseInt(e.target.value, 10) || 28)}
+              onChange={(e) => handleCrfChange(parseSafeNum(e.target.value, 0, 0))}
               className="w-full bg-slate-950 border border-slate-700 rounded-lg px-2.5 py-1.5 text-xs text-amber-300 font-mono font-bold focus:border-amber-500 focus:outline-none disabled:opacity-40"
             />
           </div>
